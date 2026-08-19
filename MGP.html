@@ -443,6 +443,13 @@
   .palbum-cover img{width:100%;height:100%;object-fit:cover;}
   .palbum-cover-placeholder{font-size:28px;color:var(--paper-dim);}
   .palbum-card h3{font-family:'Fraunces',serif;font-size:14.5px;margin:0 0 3px;}
+  .palbum-view-row{display:flex;flex-direction:column;gap:5px;margin-top:8px;}
+  .palbum-view-btn{
+    background:rgba(76,125,176,0.1);border:1px solid var(--blue-deep);border-radius:6px;
+    color:var(--blue-bright);font-size:11px;padding:5px 8px;cursor:pointer;text-align:left;
+    transition:all .15s;
+  }
+  .palbum-view-btn:hover{background:rgba(76,125,176,0.22);}
   .palbum-editor-grid{display:grid;grid-template-columns:220px 1fr;gap:32px;align-items:start;}
   @media (max-width:700px){ .palbum-editor-grid{grid-template-columns:1fr;} }
   .palbum-editor-side input{width:100%;background:#0c111c;border:1px solid var(--line);border-radius:8px;color:var(--paper);font-family:'Inter',sans-serif;padding:9px 12px;}
@@ -4321,10 +4328,27 @@
               <div class="palbum-cover">${a.cover ? `<img src="${a.cover}" alt="">` : `<span class="palbum-cover-placeholder">♪</span>`}</div>
               <h3>${escapeHtml(a.title || 'Album sans titre')}</h3>
               <span class="comp-meta">${(a.trackIds||[]).length} piste(s)</span>
+              ${(a.pdfWithChords || a.pdfWithoutChords) ? `
+                <div class="palbum-view-row">
+                  ${a.pdfWithChords ? `<button type="button" class="palbum-view-btn" data-id="${a.id}" data-variant="chords">👁 Avec accords</button>` : ''}
+                  ${a.pdfWithoutChords ? `<button type="button" class="palbum-view-btn" data-id="${a.id}" data-variant="nochords">👁 Paroles seules</button>` : ''}
+                </div>
+              ` : ''}
             </div>
           `).join('') : '<p class="empty-note">Aucun album pour l\'instant.</p>'}
         </div>
       `;
+      root.querySelectorAll('.palbum-view-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const a = loadPAlbums().find(x => x.id === btn.dataset.id);
+          if(!a) return;
+          const dataUrl = btn.dataset.variant === 'chords' ? a.pdfWithChords : a.pdfWithoutChords;
+          if(!dataUrl) return;
+          const label = btn.dataset.variant === 'chords' ? 'avec accords' : 'paroles seules';
+          window.openPdfReader(dataUrl, (a.title||'Album') + ' — ' + label + ' — MGP', (a.title||'album') + ' - ' + label + '.pdf');
+        });
+      });
       document.getElementById('add-album-comp-btn').addEventListener('click', () => {
         const list = loadPAlbums();
         const id = 'palbum' + Date.now();
@@ -4398,8 +4422,14 @@
             </div>
             <input type="text" id="palbum-title-input" placeholder="Titre de l'album" value="${escapeHtml(album.title||'')}" style="margin-top:14px;font-size:16px;">
             <input type="text" id="palbum-subtitle-input" placeholder="Sous-titre / dédicace" value="${escapeHtml(album.subtitle||'')}" style="margin-top:10px;">
-            <button type="button" class="btn-add" id="palbum-generate-with" style="margin-top:20px;width:100%;justify-content:center;">👁 Aperçu — avec accords</button>
-            <button type="button" class="btn-ghost" id="palbum-generate-without" style="margin-top:10px;width:100%;justify-content:center;">👁 Aperçu — paroles seules</button>
+            ${(album.pdfWithChords || album.pdfWithoutChords) ? `
+              <p class="comp-meta" style="margin-top:18px;margin-bottom:6px;">Déjà généré — consultable sans re-générer :</p>
+              ${album.pdfWithChords ? `<button type="button" class="btn-ghost" id="palbum-view-with" style="width:100%;justify-content:center;margin-bottom:8px;">📖 Consulter — avec accords</button>` : ''}
+              ${album.pdfWithoutChords ? `<button type="button" class="btn-ghost" id="palbum-view-without" style="width:100%;justify-content:center;">📖 Consulter — paroles seules</button>` : ''}
+              <div class="fret-divider small" style="margin:16px 0;"><div class="dot"></div><div class="line"></div><div class="dot"></div></div>
+            ` : ''}
+            <button type="button" class="btn-add" id="palbum-generate-with" style="margin-top:${(album.pdfWithChords || album.pdfWithoutChords) ? '0' : '20px'};width:100%;justify-content:center;">↻ ${(album.pdfWithChords) ? 'Régénérer' : 'Générer'} — avec accords</button>
+            <button type="button" class="btn-ghost" id="palbum-generate-without" style="margin-top:10px;width:100%;justify-content:center;">↻ ${(album.pdfWithoutChords) ? 'Régénérer' : 'Générer'} — paroles seules</button>
             <button type="button" class="data-io-link" id="palbum-delete-btn" style="color:#E8867F;margin-top:18px;">✕ Supprimer cet album</button>
           </div>
           <div class="palbum-editor-tracks">
@@ -4492,6 +4522,14 @@
       });
       document.getElementById('palbum-generate-with').addEventListener('click', () => generateAlbumPdf(id, true));
       document.getElementById('palbum-generate-without').addEventListener('click', () => generateAlbumPdf(id, false));
+      const viewWithBtn = document.getElementById('palbum-view-with');
+      if(viewWithBtn) viewWithBtn.addEventListener('click', () => {
+        window.openPdfReader(album.pdfWithChords, (album.title||'Album') + ' — avec accords — MGP', (album.title||'album') + ' - avec accords.pdf');
+      });
+      const viewWithoutBtn = document.getElementById('palbum-view-without');
+      if(viewWithoutBtn) viewWithoutBtn.addEventListener('click', () => {
+        window.openPdfReader(album.pdfWithoutChords, (album.title||'Album') + ' — paroles seules — MGP', (album.title||'album') + ' - paroles seules.pdf');
+      });
     }
     window.renderCompositionAlbumDetail = renderAlbumDetailEditor;
 
@@ -4720,6 +4758,19 @@
       const filename = (album.title || 'album') + (withChords ? ' - avec accords' : ' - paroles seules') + '.pdf';
       const readerTitle = (album.title || 'Album') + ' — ' + (withChords ? 'avec accords' : 'paroles seules') + ' — MGP';
       const dataUrl = doc.output('datauristring');
+
+      // Garde une version consultable en permanence — plus besoin de tout regénérer à chaque
+      // fois pour juste revoir l'album déjà fait.
+      try{
+        const albums = loadPAlbums();
+        const a = albums.find(x => x.id === id);
+        if(a){
+          if(withChords) a.pdfWithChords = dataUrl; else a.pdfWithoutChords = dataUrl;
+          a.updatedAt = Date.now();
+          savePAlbums(albums);
+        }
+      }catch(e){}
+
       // Aperçu direct dans le lecteur du site (mêmes défilement/plein écran que les guides Cours) —
       // pas besoin de télécharger juste pour voir le résultat. Le bouton "Télécharger" reste
       // disponible dans le lecteur si l'utilisateur veut garder le fichier.
