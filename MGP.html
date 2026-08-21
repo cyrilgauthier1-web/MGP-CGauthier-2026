@@ -1942,14 +1942,17 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
                   <span>Télécharger en PDF</span>
                 </button>
-                <button class="btn-ghost" id="pe-share-btn">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>
-                  Partager (Drive, Fichiers…)
-                </button>
                 <button class="btn-ghost" id="pe-png-btn">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
                   PNG
                 </button>
+                <!-- Raccourci vers le dossier Google Drive des partitions.
+                     Pour changer de dossier un jour : remplacer l'URL du href ci-dessous (c'est le seul endroit).
+                     Volontairement un simple lien HTML, sans JavaScript : rien ne peut casser. -->
+                <a class="btn-ghost" id="pe-drive-btn" style="text-decoration:none;" href="https://drive.google.com/drive/folders/1XQspf7kxkUZsOom3A-ud1DbCe0IlU_q2?usp=share_link" target="_blank" rel="noopener">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"><path d="M8 3L2 14l3 5 6-11z"/><path d="M8 3h8l6 11h-8z"/><path d="M5 19h14l-3-5H8z"/></svg>
+                  Mon Drive
+                </a>
               </div>
               <div class="pe-integrate">
                 <label>Associer à un morceau du répertoire</label>
@@ -4162,35 +4165,10 @@
     );
   });
 
-  // "Partager" — hands the PDF straight to the OS share sheet (Drive, Fichiers, iCloud, Mail…)
-  // in one tap, instead of download-then-reupload. Falls back to a plain download if the
-  // browser doesn't support sharing files (mostly a desktop-Firefox/Safari limitation).
-  document.getElementById('pe-share-btn').addEventListener('click', () => {
-    const btn = document.getElementById('pe-share-btn');
-    if(!peGetJsPDFCtor()){
-      alert("Le générateur de PDF n'a pas pu se charger (connexion internet requise). Réessaie dans un instant.");
-      return;
-    }
-    peWithButtonBusy(btn, 'Préparation…', () =>
-      peBuildPdfDataUrl().then(pdf => {
-        const blob = pdf.output('blob');
-        const file = new File([blob], 'mgp-' + peFilenameBase() + '.pdf', { type: 'application/pdf' });
-        if(navigator.canShare && navigator.canShare({ files: [file] })){
-          return navigator.share({
-            files: [file],
-            title: peEls.title.value || 'Partition',
-            text: 'Partition — ' + (peEls.title.value || '')
-          }).catch(err => { if(err && err.name !== 'AbortError') throw err; });
-        }
-        // no file-sharing support here — fall back to a normal download
-        pdf.save('mgp-' + peFilenameBase() + '.pdf');
-        alert("Le partage direct n'est pas pris en charge par ce navigateur — le PDF a été téléchargé, tu peux l'envoyer vers Drive ou Fichiers manuellement.");
-      }).catch((err) => {
-        console.error(err);
-        alert("Le partage a échoué (" + (err && err.message ? err.message : 'erreur inconnue') + ").");
-      })
-    );
-  });
+  // Le bouton "Partager (Drive, Fichiers…)" a été retiré — remplacé par le raccourci "Mon Drive"
+  // dans la rangée de boutons de la section Partition. Son gestionnaire de clic a été supprimé ici
+  // en même temps : laissé en place, il aurait planté toute la page au chargement en cherchant un
+  // bouton qui n'existe plus.
 
   // ---- integrate into the répertoire: save this sheet as the song's PDF reference ----
   function peFillSongSelect(){
