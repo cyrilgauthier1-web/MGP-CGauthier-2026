@@ -4317,11 +4317,11 @@
     function loadComps(){ try{ return JSON.parse(localStorage.getItem(COMP_KEY)) || []; }catch(e){ return []; } }
     function saveComps(list){ try{ localStorage.setItem(COMP_KEY, JSON.stringify(list)); }catch(e){} }
 
-    // --- geste secret : 5 clics sur le logo MGP en moins de 2s ---
+    // --- geste secret : 5 clics sur le compteur de motivation en moins de 2s ---
     let clickTimes = [];
-    const brandBtn = document.getElementById('brand-home');
-    if(brandBtn){
-      brandBtn.addEventListener('click', (e) => {
+    const secretTriggerEl = document.getElementById('complete-counter');
+    if(secretTriggerEl){
+      secretTriggerEl.addEventListener('click', (e) => {
         const now = Date.now();
         clickTimes = clickTimes.filter(t => now - t < 2000);
         clickTimes.push(now);
