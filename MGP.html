@@ -3161,6 +3161,13 @@
     const splash = document.getElementById('entry-splash');
     if(!splash) return;
     splash.addEventListener('click', () => {
+      // Toujours atterrir sur l'accueil en entrant, peu importe la section qui était
+      // active avant (ex: si l'onglet gardait #cours ou #partition dans l'URL).
+      if(location.hash) history.replaceState(null, '', location.pathname + location.search);
+      hideAllViews();
+      slidesEl.style.display = '';
+      window.scrollTo(0, 0);
+
       splash.classList.add('entry-leaving');
       document.body.classList.remove('pre-entry');
       setTimeout(() => { splash.remove(); }, 700);
