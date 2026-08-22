@@ -1360,6 +1360,9 @@
   .pdf-slide-viewer:fullscreen{background:#000;border-radius:0;justify-content:center;}
   .pdf-slide-viewer:fullscreen .pdf-slide-canvas{max-height:82vh;width:auto;}
   .pdf-slide-canvas{max-width:100%;height:auto;border-radius:4px;box-shadow:0 10px 30px rgba(0,0,0,0.5);}
+  /* Pile de pages : lecture d'un seul défilement au lieu d'une page à la fois. */
+  .pdf-slide-stack{display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;}
+  .pdf-slide-viewer:fullscreen .pdf-slide-stack{overflow-y:auto;max-height:88vh;}
   .pdf-slide-nav{display:flex;align-items:center;gap:16px;}
   .pdf-nav-btn{
     width:34px;height:34px;border-radius:50%;border:1px solid var(--blue-deep);background:rgba(76,125,176,0.14);
@@ -2755,49 +2758,53 @@
       return;
     }
     try{ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(e){}
+    // Les pages sont EMPILÉES et se lisent d'un seul défilement, plutôt qu'une page
+    // à la fois avec des flèches. Depuis que les partitions sont générées en A4
+    // (imprimables), une feuille tient souvent sur 2 pages : les faire défiler à la
+    // suite redonne la lecture « d'un coup » qu'on avait avec l'ancienne page unique.
     container.innerHTML = `
-      <canvas class="pdf-slide-canvas"></canvas>
+      <div class="pdf-slide-stack"></div>
       <div class="pdf-slide-nav">
-        <button type="button" class="pdf-nav-btn" data-dir="-1" aria-label="Page précédente">‹</button>
         <span class="pdf-slide-count">…</span>
-        <button type="button" class="pdf-nav-btn" data-dir="1" aria-label="Page suivante">›</button>
         <button type="button" class="pdf-nav-btn pdf-fs-btn" title="Plein écran">${ICON_FULLSCREEN}</button>
       </div>`;
     container.querySelector('.pdf-fs-btn').addEventListener('click', () => peRequestFullscreen(container));
-    const canvas = container.querySelector('.pdf-slide-canvas');
+    const stack = container.querySelector('.pdf-slide-stack');
     const countEl = container.querySelector('.pdf-slide-count');
-    let pdfDoc = null, curPage = 1, rendering = false;
+    let pdfDoc = null, rendering = false;
 
-    function renderPage(n){
-      if(!pdfDoc || rendering) return;
+    // Rendu séquentiel : une page après l'autre, pour ne pas saturer la mémoire
+    // sur un PDF Drive de plusieurs dizaines de pages.
+    function renderAll(){
+      if(!pdfDoc || rendering) return Promise.resolve();
       rendering = true;
-      pdfDoc.getPage(n).then(page => {
-        const targetW = container.clientWidth || 600;
-        const baseViewport = page.getViewport({ scale: 1 });
-        const scale = Math.min(2.5, targetW / baseViewport.width);
-        const viewport = page.getViewport({ scale });
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext('2d');
-        return page.render({ canvasContext: ctx, viewport }).promise.then(() => {
-          countEl.textContent = n + ' / ' + pdfDoc.numPages;
-          rendering = false;
+      stack.innerHTML = '';
+      const targetW = container.clientWidth || 600;
+      let chain = Promise.resolve();
+      for(let n = 1; n <= pdfDoc.numPages; n++){
+        chain = chain.then(() => pdfDoc.getPage(n)).then(page => {
+          const baseViewport = page.getViewport({ scale: 1 });
+          const scale = Math.min(2.5, targetW / baseViewport.width);
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement('canvas');
+          canvas.className = 'pdf-slide-canvas';
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          stack.appendChild(canvas);
+          return page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
         });
+      }
+      return chain.then(() => {
+        countEl.textContent = pdfDoc.numPages + (pdfDoc.numPages > 1 ? ' pages' : ' page');
+        rendering = false;
       }).catch(() => { rendering = false; });
     }
-    container.querySelectorAll('.pdf-nav-btn:not(.pdf-fs-btn)').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if(!pdfDoc) return;
-        const next = curPage + parseInt(btn.dataset.dir, 10);
-        if(next >= 1 && next <= pdfDoc.numPages){ curPage = next; renderPage(curPage); }
-      });
-    });
     ['fullscreenchange','webkitfullscreenchange'].forEach(evt => {
-      document.addEventListener(evt, () => setTimeout(() => renderPage(curPage), 60));
+      document.addEventListener(evt, () => setTimeout(renderAll, 60));
     });
     pdfjsLib.getDocument({ url: dataUrl }).promise.then(doc => {
       pdfDoc = doc;
-      renderPage(curPage);
+      renderAll();
     }).catch((err) => {
       if(typeof onFail === 'function'){ onFail(err); return; }
       container.innerHTML = `<p class="empty-note">Impossible d'afficher l'aperçu — utilise le bouton de téléchargement ci-dessous.</p>`;
@@ -4094,7 +4101,283 @@
     return { included: withPdf.map(s=>s.song), skipped: withoutPdf.map(s=>s.song) };
   }
 
-  function peBuildPdfDataUrl(){
+  // ============================================================================
+  //  PARTITION EN PDF VECTORIEL
+  //  ---------------------------------------------------------------------------
+  //  Dessine la feuille directement avec jsPDF (traits + texte), exactement comme
+  //  le fait déjà l'export d'album dans la section Setlist. Aucune capture d'écran,
+  //  donc :
+  //    - quasi instantané (html2canvas clonait toute la page — ~6000 éléments —
+  //      pour n'en dessiner que 14) ;
+  //    - le texte reste du vrai texte : sélectionnable, cherchable, net à tout zoom ;
+  //    - ~5 Ko par partition au lieu de 150-300 Ko, ce qui change tout pour le
+  //      stockage localStorage (333 partitions ≈ 2 Mo au lieu de bien plus que le quota).
+  //  L'ancienne méthode par capture reste en secours automatique plus bas.
+  // ============================================================================
+
+  // Les polices standard PDF sont encodées en WinAnsi : tout ce qui en sort
+  // (♩, ♪, guillemets courbes exotiques…) doit être remplacé, sinon jsPDF écrit
+  // des caractères parasites. On reste conservateur : on ne touche qu'au connu.
+  function peWinAnsi(str){
+    return String(str == null ? '' : str)
+      .replace(/♩/g, '').replace(/♪/g, '').replace(/♫/g, '')
+      .replace(/[‘’]/g, "'")
+      .replace(/[“”]/g, '"')
+      .replace(/…/g, '...')
+      .replace(/[‒–―]/g, '-');
+  }
+
+  function peBuildVectorPdf(){
+    const JsPdf = peGetJsPDFCtor();
+    if(!JsPdf) throw new Error('jsPDF indisponible');
+
+    const INK='#05070c', CARD='#0e1420', LINE='#1b3a63', GRID='#3a5a80',
+          PAPER='#e9eef6', PAPER_DIM='#8896ac', BLUE='#7fb0e8', CREAM='#f2e7be';
+
+    // Format de page :
+    //   'a4'      — pages A4 successives : imprimable tel quel. C'est le choix retenu.
+    //               (L'ancienne méthode produisait une seule page très haute, que
+    //               l'imprimante réduisait en minuscule sur une unique feuille.)
+    //   'continu' — une seule page haute comme la feuille, sans coupure.
+    // Le confort de défilement dans la Bibliothèque ne dépend pas de ce réglage mais
+    // du visualiseur, qui empile désormais les pages au fil du scroll.
+    const PE_PDF_FORMAT = 'a4';
+
+    const W = 210, M = 18, CW = W - 2*M;
+
+    const title    = peWinAnsi(peEls.title.value || 'Titre du morceau');
+    const artist   = peWinAnsi(peEls.artist.value || '');
+    const settings = peWinAnsi(peSettingsString());
+
+    // Couleur d'un accord : même règle que la feuille à l'écran (PE_PALETTE en alternance).
+    const chordColor = {};
+    peChosen.forEach((c,i) => { chordColor[c.name] = PE_PALETTE[i % 2]; });
+
+    // ---- paroles : mêmes règles d'analyse que l'affichage écran ----
+    const rows = [];
+    (peEls.lyrics.value || '').split('\n').forEach(line => {
+      const { lyricLine, chords } = peParseExactLine(line);
+      rows.push({ text: peWinAnsi(lyricLine), chords: chords.map(c => ({ name: peWinAnsi(c.name), col: c.col })) });
+    });
+
+    // Taille de police ajustée pour que la ligne la plus longue tienne dans la page,
+    // sans jamais couper : l'alignement des accords repose sur la chasse fixe.
+    let longest = 0;
+    rows.forEach(r => {
+      longest = Math.max(longest, r.text.length);
+      r.chords.forEach(c => { longest = Math.max(longest, c.col + c.name.length); });
+    });
+    let fs = 9;
+    if(longest > 0){
+      // Courier : largeur d'un caractère = 0.6 em
+      const maxFs = (CW - 12) / (longest * 0.6) * 2.834645; // mm -> pt
+      fs = Math.max(5.5, Math.min(9, maxFs));
+    }
+    const lineH = fs * 0.352778 * 1.45;   // pt -> mm, interligne 1.45
+    const charW = fs * 0.6 * 0.352778;    // largeur d'un caractère en mm
+
+    // ---------- géométrie commune ----------
+    const HEADER_BOTTOM = M + 3 + 12;     // ce que renvoie header() sur une page vierge
+    const CARD_H = 30, PAD = 6, FOOT = 18;
+    const rowHeight = row => (row.chords.length ? 2 : 1) * lineH;
+
+    const withShape = peChosen.filter(c => (c.shape||'').trim());
+    const DIA_W = 13, DIA_GAP = 9;
+    const diaPerRow = Math.max(1, Math.floor((CW + DIA_GAP) / (DIA_W + DIA_GAP)));
+    const diaRows = withShape.length ? Math.ceil(withShape.length / diaPerRow) : 0;
+    const diaBlockH = diaRows ? diaRows * (DIA_W*1.05 + 12) + 4 : 0;
+
+    // Hauteur de page : en mode continu, on la calcule pour que tout tienne d'un
+    // seul tenant — jsPDF accepte un format sur mesure, exactement comme le faisait
+    // l'ancienne méthode avec la hauteur du canvas.
+    // Le format PDF plafonne à 14400 unités (200 pouces ≈ 5080 mm) par page : au-delà,
+    // le fichier serait invalide. Une partition aussi longue est improbable, mais on
+    // repasse alors proprement en pages A4 plutôt que de produire un PDF cassé.
+    const H_MAX = 5000;
+    let H, continu = (PE_PDF_FORMAT !== 'a4');
+    if(continu){
+      let h = HEADER_BOTTOM + CARD_H + 12 + diaBlockH + PAD;
+      rows.forEach(r => { h += rowHeight(r); });
+      h = h + PAD + FOOT;
+      if(h > H_MAX){ continu = false; }
+      else { H = Math.max(200, h); }
+    }
+    if(!continu) H = 297;
+
+    const doc = new JsPdf({ unit:'mm', format:[W, H], orientation: H >= W ? 'portrait' : 'landscape' });
+
+    // ---------- primitives de page ----------
+    function pageBg(){ doc.setFillColor(INK); doc.rect(0,0,W,H,'F'); }
+
+    function header(){
+      doc.setFont('times','bold'); doc.setFontSize(13);
+      const wM = doc.getTextWidth('M'), wG = doc.getTextWidth('G');
+      doc.setTextColor(PAPER); doc.text('M', M, M);
+      doc.setTextColor(BLUE);  doc.text('G', M + wM, M);
+      doc.setTextColor(PAPER); doc.text('P', M + wM + wG, M);
+      const ry = M + 3;
+      doc.setDrawColor(BLUE); doc.setLineWidth(0.3);
+      doc.line(M, ry, W-M, ry);
+      doc.setFillColor(BLUE);
+      doc.circle(M, ry, 0.6, 'F'); doc.circle(W-M, ry, 0.6, 'F');
+      return ry + 12;
+    }
+
+    function footer(){
+      doc.setFont('courier','normal'); doc.setFontSize(7);
+      doc.setTextColor(PAPER_DIM);
+      doc.text('MA GUITARE PERSO — carnet perso, usage privé', M, H-12);
+    }
+
+    // Diagramme d'accord : 6 cordes x 4 cases — même lecture que peRenderChip.
+    function chordDiagram(x, yTop, w, name, shape, color){
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.setTextColor(color);
+      doc.text(String(name), x + w/2, yTop - 3.5, { align:'center' });
+
+      const cells = String(shape||'').split('');
+      const nums = cells.map(v => parseInt(v,10)).filter(n => !isNaN(n) && n > 0);
+      const base = (nums.length && Math.max.apply(null,nums) > 4) ? Math.min.apply(null,nums) - 1 : 0;
+
+      const gh = w * 1.05, sx = w/5, fy = gh/4;
+      doc.setDrawColor(GRID); doc.setLineWidth(0.15);
+      for(let i=0;i<6;i++) doc.line(x + i*sx, yTop, x + i*sx, yTop + gh);
+      for(let j=0;j<=4;j++){
+        if(j === 0 && base === 0) continue;
+        doc.line(x, yTop + j*fy, x + w, yTop + j*fy);
+      }
+      if(base === 0){ // sillet
+        doc.setDrawColor(PAPER_DIM); doc.setLineWidth(0.6);
+        doc.line(x, yTop, x + w, yTop);
+      } else {
+        doc.setFont('helvetica','normal'); doc.setFontSize(5.5);
+        doc.setTextColor(PAPER_DIM);
+        doc.text(base + 1 + 'fr', x + w + 0.8, yTop + 2);
+      }
+      for(let i=0;i<6;i++){
+        const v = cells[i], cx = x + i*sx;
+        if(v === 'x' || v === 'X'){
+          doc.setFont('helvetica','bold'); doc.setFontSize(6);
+          doc.setTextColor(PAPER_DIM);
+          doc.text('x', cx, yTop - 1, { align:'center' });
+        } else if(v === '0'){
+          doc.setDrawColor(PAPER_DIM); doc.setLineWidth(0.2);
+          doc.circle(cx, yTop - 1.8, 0.6, 'S');
+        } else if(v !== undefined && v !== ''){
+          const fret = parseInt(v,10);
+          if(!isNaN(fret) && fret > 0){
+            const rel = Math.min(Math.max(fret - base, 1), 4);
+            doc.setFillColor(color);
+            doc.circle(cx, yTop + (rel - 0.5)*fy, 0.8, 'F');
+          }
+        }
+      }
+      return yTop + gh;
+    }
+
+    // ---------- page 1 ----------
+    pageBg();
+    let y = header();
+
+    const cardH = 30;
+    doc.setFillColor(CARD); doc.setDrawColor(LINE); doc.setLineWidth(0.3);
+    doc.roundedRect(M, y, CW, cardH, 3, 3, 'FD');
+    doc.setFont('times','bold'); doc.setFontSize(24);
+    doc.setTextColor(CREAM);
+    doc.text(title, W/2, y + 13, { align:'center' });
+    if(artist){
+      doc.setFont('times','italic'); doc.setFontSize(11);
+      doc.setTextColor(BLUE);
+      doc.text(artist, W/2, y + 20, { align:'center' });
+    }
+    if(settings){
+      doc.setFont('courier','normal'); doc.setFontSize(8);
+      doc.setTextColor(PAPER_DIM);
+      doc.text(settings, W/2, y + 26, { align:'center' });
+    }
+    y += cardH + 12;
+
+    // ---------- diagrammes d'accords (groupe centré) ----------
+    if(withShape.length){
+      for(let r=0; r*diaPerRow < withShape.length; r++){
+        const slice = withShape.slice(r*diaPerRow, (r+1)*diaPerRow);
+        const totalW = slice.length*DIA_W + (slice.length-1)*DIA_GAP;
+        const x0 = (W - totalW)/2;
+        slice.forEach((c,i) => {
+          chordDiagram(x0 + i*(DIA_W+DIA_GAP), y + 4, DIA_W, c.name, c.shape, chordColor[c.name] || BLUE);
+        });
+        y += DIA_W*1.05 + 12;
+      }
+      y += 4;
+    }
+
+    // ---------- paroles ----------
+    // jsPDF n'a pas de notion de plan : ce qui est tracé en dernier recouvre le reste.
+    // La carte doit donc être dessinée AVANT son texte — ce qui suppose de connaître
+    // sa hauteur à l'avance. D'où deux passes : on répartit d'abord les lignes en
+    // pages (aucun dessin), puis on dessine carte + texte, page par page.
+    // En mode continu la page est déjà taillée pour tout contenir : aucune coupure.
+    const pad = PAD;
+    const bottomLimit = (PE_PDF_FORMAT === 'a4') ? H - 20 : Infinity;
+
+    // --- passe 1 : mesure ---
+    const pages = [];
+    let cur = { rows: [], top: y };
+    let yy = y + pad;
+    rows.forEach(row => {
+      const need = rowHeight(row);
+      if(yy + need > bottomLimit){
+        cur.bottom = yy + pad - lineH*0.4;
+        pages.push(cur);
+        cur = { rows: [], top: HEADER_BOTTOM };
+        yy = HEADER_BOTTOM + pad;
+      }
+      cur.rows.push(row);
+      yy += need;
+    });
+    cur.bottom = yy + pad - lineH*0.4;
+    pages.push(cur);
+
+    // --- passe 2 : dessin ---
+    pages.forEach((pg, idx) => {
+      if(idx > 0){ doc.addPage(); pageBg(); header(); }
+      doc.setFillColor(CARD); doc.setDrawColor(LINE); doc.setLineWidth(0.3);
+      doc.roundedRect(M, pg.top, CW, Math.max(pg.bottom - pg.top, 8), 2.5, 2.5, 'FD');
+
+      let ty = pg.top + pad;
+      pg.rows.forEach(row => {
+        if(row.chords.length){
+          doc.setFont('courier','bold'); doc.setFontSize(fs);
+          row.chords.forEach(c => {
+            doc.setTextColor(chordColor[c.name] || BLUE);
+            doc.text(c.name, M + pad + c.col*charW, ty);
+          });
+          ty += lineH;
+        }
+        if(row.text){
+          doc.setFont('courier','normal'); doc.setFontSize(fs);
+          doc.setTextColor(PAPER);
+          doc.text(row.text, M + pad, ty);
+        }
+        ty += lineH;
+      });
+    });
+
+    const total = doc.getNumberOfPages();
+    for(let p=1; p<=total; p++){
+      doc.setPage(p);
+      footer();
+      doc.setFont('courier','normal'); doc.setFontSize(7);
+      doc.setTextColor(PAPER_DIM);
+      doc.text(p + '/' + total, W-M, H-12, { align:'right' });
+    }
+    return doc;
+  }
+
+  // Ancienne méthode, conservée comme secours automatique : capture d'image de la
+  // feuille affichée. Plus lente et dépendante de html2canvas, mais elle a fait ses
+  // preuves — si le vectoriel échoue pour une raison quelconque, on repasse par là.
+  function peBuildRasterPdf(){
     return peCaptureCanvas().then(canvas => {
       const jsPDFCtor = peGetJsPDFCtor();
       if(!jsPDFCtor) throw new Error("bibliothèque PDF introuvable (window.jspdf)");
@@ -4110,6 +4393,18 @@
       pdf.addImage(imgData, 'JPEG', 0, 0, wmm, hmm);
       return pdf;
     });
+  }
+
+  // Point d'entrée unique utilisé par le bouton "Télécharger en PDF" et par
+  // l'association d'une partition à un morceau. Vectoriel d'abord ; au moindre
+  // problème, retour silencieux à l'ancienne capture d'image — la fiabilité prime.
+  function peBuildPdfDataUrl(){
+    try{
+      return Promise.resolve(peBuildVectorPdf());
+    }catch(err){
+      console.warn('PDF vectoriel indisponible, retour à la capture image :', err);
+      return peBuildRasterPdf();
+    }
   }
 
   // localStorage has a small quota (~5-10MB per site) shared by the whole song list —
