@@ -1044,6 +1044,18 @@
   .pe-progression-row input:focus{outline:none;border-color:var(--blue);}
 
   .pe-integrate{margin-top:14px;padding-top:14px;border-top:1px dashed var(--line);}
+  /* ---- jauge de mémoire locale ---- */
+  .mgp-storage{margin-top:14px;padding-top:14px;border-top:1px dashed var(--line);}
+  .mgp-storage-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:6px;}
+  .mgp-storage-label{font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--paper-dim);}
+  .mgp-storage-val{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--blue-bright);}
+  .mgp-storage-bar{height:5px;border-radius:999px;background:#141a28;border:1px solid var(--line);overflow:hidden;}
+  .mgp-storage-bar i{display:block;height:100%;width:0;border-radius:999px;background:var(--blue-bright);transition:width .35s ease, background .35s ease;}
+  .mgp-storage.is-warn .mgp-storage-val{color:#f2c572;}
+  .mgp-storage.is-warn .mgp-storage-bar i{background:#f2c572;}
+  .mgp-storage.is-full .mgp-storage-val{color:#e8867f;}
+  .mgp-storage.is-full .mgp-storage-bar i{background:#e8867f;}
+  .mgp-storage-note{margin:6px 0 0;font-size:11px;color:var(--paper-dim);line-height:1.45;}
   .pe-integrate label{
     display:block;font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:0.05em;
     text-transform:uppercase;color:var(--paper-dim);margin-bottom:6px;
@@ -1957,6 +1969,19 @@
                   Mon Drive
                 </a>
               </div>
+
+              <!-- Jauge de mémoire locale : tout ce que le site garde sur CET appareil
+                   (morceaux, partitions, setlists, compositions). Le navigateur plafonne
+                   à ~5 Mo par site ; au-delà, plus rien ne peut être enregistré. -->
+              <div class="mgp-storage" id="mgp-storage" title="Mémoire utilisée par le site sur cet appareil">
+                <div class="mgp-storage-head">
+                  <span class="mgp-storage-label">Mémoire locale</span>
+                  <span class="mgp-storage-val" id="mgp-storage-val">…</span>
+                </div>
+                <div class="mgp-storage-bar"><i id="mgp-storage-fill"></i></div>
+                <p class="mgp-storage-note" id="mgp-storage-note"></p>
+              </div>
+
               <div class="pe-integrate">
                 <label>Associer à un morceau du répertoire</label>
                 <div class="pe-progression-row">
@@ -2608,6 +2633,8 @@
   }
   function saveSongs(songs){
     try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(songs)); }catch(e){}
+    // la jauge n'existe qu'une fois la page construite — d'où le garde-fou
+    if(typeof mgpRenderStorage === 'function') mgpRenderStorage();
   }
   function getAllSongs(){ return loadSongs(); }
 
@@ -4409,12 +4436,76 @@
 
   // localStorage has a small quota (~5-10MB per site) shared by the whole song list —
   // this saves defensively and reports a clear, actionable error instead of failing silently.
+  // ---------- JAUGE DE MÉMOIRE LOCALE ----------
+  // Mesure ce que le site occupe dans le localStorage de CET appareil. Le quota
+  // n'est pas interrogeable de façon fiable (il varie selon le navigateur, ~5 Mo
+  // sur Safari), donc on l'affiche comme un repère et non comme une vérité absolue.
+  const MGP_QUOTA_REF = 5 * 1024 * 1024;
+
+  function mgpStorageUsage(){
+    let total = 0;
+    const parts = [];
+    try{
+      for(let i = 0; i < localStorage.length; i++){
+        const k = localStorage.key(i);
+        if(!k || k.indexOf('mgp') !== 0) continue;   // on ne compte que nos propres clés
+        const v = localStorage.getItem(k) || '';
+        const size = k.length + v.length;
+        total += size;
+        parts.push({ key: k, size });
+      }
+    }catch(e){ return { total: 0, parts: [], ok: false }; }
+    parts.sort((a,b) => b.size - a.size);
+    return { total, parts, ok: true };
+  }
+
+  function mgpFormatSize(n){
+    if(n < 1024) return n + ' o';
+    if(n < 1024*1024) return (n/1024).toFixed(0) + ' Ko';
+    return (n/(1024*1024)).toFixed(2).replace('.', ',') + ' Mo';
+  }
+
+  function mgpRenderStorage(){
+    const box = document.getElementById('mgp-storage');
+    if(!box) return;
+    const valEl  = document.getElementById('mgp-storage-val');
+    const fillEl = document.getElementById('mgp-storage-fill');
+    const noteEl = document.getElementById('mgp-storage-note');
+    const u = mgpStorageUsage();
+    if(!u.ok){
+      valEl.textContent = 'indisponible';
+      noteEl.textContent = "Ce navigateur n'autorise pas la lecture du stockage local.";
+      return;
+    }
+    const pct = Math.min(100, u.total / MGP_QUOTA_REF * 100);
+    valEl.textContent = mgpFormatSize(u.total) + '  ·  ' + pct.toFixed(pct < 10 ? 1 : 0) + ' %';
+    fillEl.style.width = Math.max(pct, u.total > 0 ? 1.5 : 0) + '%';
+    box.classList.toggle('is-warn', pct >= 60 && pct < 85);
+    box.classList.toggle('is-full', pct >= 85);
+
+    // Le plus gros poste, pour savoir quoi alléger le cas échéant.
+    const top = u.parts[0];
+    const NOMS = {
+      mgpSongsV1:'morceaux et partitions', mgpAlbumsV1:'albums',
+      mgpSetlistsV1:'setlists', mgpCompositionsV1:'compositions',
+      mgpPersonalAlbumsV1:'albums personnels'
+    };
+    let note = 'Repère ~5 Mo par site. ';
+    if(top) note += 'Poste principal : ' + (NOMS[top.key] || top.key) + ' (' + mgpFormatSize(top.size) + '). ';
+    if(pct >= 85) note += 'Presque plein — stocke les prochaines partitions sur ton Drive (bouton ci-dessus) plutôt qu’en local.';
+    else if(pct >= 60) note += 'Pense au Drive pour les PDF lourds importés.';
+    noteEl.textContent = note;
+    box.title = u.parts.map(p => (NOMS[p.key] || p.key) + ' : ' + mgpFormatSize(p.size)).join('\n');
+  }
+
   function peSaveSongsOrThrow(songs){
     let json;
     try{ json = JSON.stringify(songs); }catch(e){ throw new Error('les données du morceau sont invalides'); }
     try{
       localStorage.setItem(STORAGE_KEY, json);
+      mgpRenderStorage();
     }catch(e){
+      mgpRenderStorage();
       throw new Error("le PDF est trop volumineux pour la mémoire du navigateur (~" + Math.round(json.length/1024) + " Ko à stocker, quota dépassé) — télécharge-le plutôt avec le bouton PDF et héberge-le sur ton dépôt GitHub, puis colle son lien dans la fiche du morceau");
     }
   }
@@ -6441,6 +6532,7 @@
   // ---------- INIT ----------
   document.getElementById('years-text').textContent = yearsSince() + ' an' + (yearsSince() > 1 ? 's' : '');
   renderList('');
+  mgpRenderStorage();
   showView();
 </script>
 
