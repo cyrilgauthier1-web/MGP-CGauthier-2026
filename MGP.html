@@ -2216,11 +2216,15 @@
 <div class="modal-overlay" id="import-mode-overlay">
   <div class="modal">
     <h3>Importer cette sauvegarde ?</h3>
+    <p style="color:var(--paper-dim);font-size:13px;line-height:1.6;margin-bottom:8px;">
+      <strong style="color:var(--paper);">Compléter</strong> — ajoute les morceaux manquants et remplit seulement les vidéos/PDF <em>vides</em>. N'écrase jamais rien.
+    </p>
     <p style="color:var(--paper-dim);font-size:13px;line-height:1.6;margin-bottom:20px;">
-      Cet import <strong style="color:var(--paper);">complète</strong> ta bibliothèque : il ajoute les morceaux manquants et remplit les vidéos/PDF manquants sur ceux déjà présents. Il ne supprime et n'écrase jamais rien de ce que tu as déjà.
+      <strong style="color:var(--blue-bright);">Mettre à jour</strong> — reprend aussi les partitions, vidéos et liens <em>déjà remplis</em>, en les remplaçant par ceux du fichier. À utiliser quand cette sauvegarde est ta version de référence (par exemple après avoir regénéré tes partitions). Les morceaux présents seulement ici sont conservés.
     </p>
     <div class="modal-actions" style="flex-direction:column;gap:10px;align-items:stretch;">
-      <button type="button" class="btn-add" id="import-mode-merge" style="justify-content:center;">Importer</button>
+      <button type="button" class="btn-add" id="import-mode-update" style="justify-content:center;">Mettre à jour (remplace)</button>
+      <button type="button" class="btn-ghost" id="import-mode-merge" style="justify-content:center;">Compléter seulement</button>
       <button type="button" class="btn-ghost" id="import-mode-cancel" style="justify-content:center;">Annuler</button>
     </div>
   </div>
@@ -6427,7 +6431,12 @@
     e.target.value = '';
   });
 
-  function runImport(){
+  // mode 'completer' : ne touche jamais à une donnée déjà remplie (comportement historique)
+  // mode 'maj'       : le fichier importé fait autorité sur les morceaux qu'il contient —
+  //                    indispensable pour propager des partitions regénérées vers un autre
+  //                    appareil, où l'ancienne version bloquait sinon la mise à jour.
+  function runImport(mode){
+    mode = (mode === 'maj') ? 'maj' : 'completer';
     const data = pendingImportData;
     if(!data) return;
     const current = loadSongs();
@@ -6443,6 +6452,13 @@
         current.push(fresh);
         bySongKey.set(key, fresh);
         addedCount++;
+      } else if(mode === 'maj'){
+        // Le fichier fait autorité : on reprend tous ses champs, en gardant le numéro
+        // local pour ne pas réordonner la bibliothèque de cet appareil.
+        const num = existing.num;
+        Object.keys(s).forEach(k => { if(k !== 'num') existing[k] = s[k]; });
+        existing.num = num;
+        updatedCount++;
       } else {
         // fill in gaps on an already-known song rather than overwrite manual edits
         let touched = false;
@@ -6457,39 +6473,54 @@
     });
     saveSongs(current);
 
-    const currentAlbums = loadAlbums();
-    const existingAlbumIds = new Set(currentAlbums.map(a => String(a.id)));
-    (data.albums||[]).forEach(a => { if(!existingAlbumIds.has(String(a.id))) currentAlbums.push(a); });
-    saveAlbums(currentAlbums);
-
-    // Fusion des setlists (même logique non destructive : on ajoute, on n'écrase jamais)
     function safeGetLS(key, fallback){
       try{ return JSON.parse(localStorage.getItem(key)) || fallback; }catch(e){ return fallback; }
     }
     function safeSetLS(key, value){
       try{ localStorage.setItem(key, JSON.stringify(value)); }catch(e){}
     }
+
+    // Fusion d'une collection identifiée par id.
+    //  - 'completer' : on ajoute seulement ce qui manque (jamais d'écrasement)
+    //  - 'maj'       : un élément de même id est remplacé par celui du fichier
+    // Renvoie le nombre d'éléments ajoutés ou remplacés.
+    function mergeById(currentList, incomingList){
+      let n = 0;
+      const index = new Map(currentList.map((x,i) => [String(x.id), i]));
+      (incomingList||[]).forEach(item => {
+        const at = index.get(String(item.id));
+        if(at === undefined){
+          index.set(String(item.id), currentList.length);
+          currentList.push(item); n++;
+        } else if(mode === 'maj'){
+          currentList[at] = item; n++;
+        }
+      });
+      return n;
+    }
+
+    const currentAlbums = loadAlbums();
+    mergeById(currentAlbums, data.albums);
+    saveAlbums(currentAlbums);
+
     let setlistsAdded = 0;
     if(Array.isArray(data.setlists)){
       const currentSetlists = safeGetLS('mgpSetlistsV1', []);
-      const existingIds = new Set(currentSetlists.map(s => String(s.id)));
-      data.setlists.forEach(s => { if(!existingIds.has(String(s.id))){ currentSetlists.push(s); setlistsAdded++; } });
+      setlistsAdded = mergeById(currentSetlists, data.setlists);
       safeSetLS('mgpSetlistsV1', currentSetlists);
     }
-    // Fusion des compositions privées (espace caché) — même logique
+    // Compositions privées (espace caché)
     let compsAdded = 0;
     if(Array.isArray(data.compositions)){
       const currentComps = safeGetLS('mgpCompositionsV1', []);
-      const existingIds = new Set(currentComps.map(c => String(c.id)));
-      data.compositions.forEach(c => { if(!existingIds.has(String(c.id))){ currentComps.push(c); compsAdded++; } });
+      compsAdded = mergeById(currentComps, data.compositions);
       safeSetLS('mgpCompositionsV1', currentComps);
     }
-    // Fusion des albums personnels (outil "Mise en page")
+    // Albums personnels (outil "Mise en page")
     let palbumsAdded = 0;
     if(Array.isArray(data.personalAlbums)){
       const currentPAlbums = safeGetLS('mgpPersonalAlbumsV1', []);
-      const existingIds = new Set(currentPAlbums.map(a => String(a.id)));
-      data.personalAlbums.forEach(a => { if(!existingIds.has(String(a.id))){ currentPAlbums.push(a); palbumsAdded++; } });
+      palbumsAdded = mergeById(currentPAlbums, data.personalAlbums);
       safeSetLS('mgpPersonalAlbumsV1', currentPAlbums);
     }
     // Code d'accès Composition : repris seulement si ce nouvel appareil n'en a pas encore un
@@ -6497,15 +6528,19 @@
       try{ localStorage.setItem('mgpCompPin', data.compPin); }catch(e){}
     }
 
-    console.log(`Import fusion : ${addedCount} morceau(x) ajouté(s), ${updatedCount} complété(s), ${setlistsAdded} setlist(s), ${compsAdded} composition(s), ${palbumsAdded} album(s) perso.`);
+    const verbe = (mode === 'maj') ? 'mis à jour' : 'complété(s)';
+    const resume = `${addedCount} morceau(x) ajouté(s), ${updatedCount} ${verbe}, `
+      + `${setlistsAdded} setlist(s), ${compsAdded} composition(s), ${palbumsAdded} album(s) perso.`;
+    console.log((mode === 'maj' ? 'Import mise à jour : ' : 'Import fusion : ') + resume);
 
     pendingImportData = null;
     document.getElementById('import-mode-overlay').classList.remove('open');
-    alert('Import terminé — la page va se recharger.');
+    alert('Import terminé — ' + resume + '\nLa page va se recharger.');
     location.reload();
   }
 
-  document.getElementById('import-mode-merge').addEventListener('click', () => runImport());
+  document.getElementById('import-mode-merge').addEventListener('click', () => runImport('completer'));
+  document.getElementById('import-mode-update').addEventListener('click', () => runImport('maj'));
   document.getElementById('import-mode-cancel').addEventListener('click', () => {
     pendingImportData = null;
     document.getElementById('import-mode-overlay').classList.remove('open');
