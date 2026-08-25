@@ -4204,13 +4204,22 @@
       const maxFs = (CW - 12) / (longest * 0.6) * 2.834645; // mm -> pt
       fs = Math.max(5.5, Math.min(9, maxFs));
     }
-    const lineH = fs * 0.352778 * 1.45;   // pt -> mm, interligne 1.45
+    const lineH = fs * 0.352778 * 1.35;   // pt -> mm, interligne
     const charW = fs * 0.6 * 0.352778;    // largeur d'un caractère en mm
 
     // ---------- géométrie commune ----------
     const HEADER_BOTTOM = M + 3 + 12;     // ce que renvoie header() sur une page vierge
     const CARD_H = 30, PAD = 6, FOOT = 18;
-    const rowHeight = row => (row.chords.length ? 2 : 1) * lineH;
+    // Hauteur d'une ligne source. Une ligne vide ou un intitulé de section seul
+    // n'ont pas besoin d'une pleine ligne : sur un texte qui en compte un tiers,
+    // leur donner la hauteur d'une vraie ligne gonflait le document d'une page entière.
+    const isBlankRow  = row => !row.chords.length && !row.text;
+    const isLabelRow  = row => row.chords.length && !row.text;   // ex. [Refrain], [Couplet 1]
+    function rowHeight(row){
+      if(isBlankRow(row)) return lineH * 0.55;
+      if(isLabelRow(row)) return lineH * 1.35;
+      return (row.chords.length ? 2 : 1) * lineH;
+    }
 
     const withShape = peChosen.filter(c => (c.shape||'').trim());
     const DIA_W = 13, DIA_GAP = 9;
@@ -4355,9 +4364,18 @@
     const pages = [];
     let cur = { rows: [], top: y };
     let yy = y + pad;
-    rows.forEach(row => {
+    rows.forEach((row, i) => {
       const need = rowHeight(row);
-      if(yy + need > bottomLimit){
+      // Un intitulé de section ne doit pas rester orphelin en bas de page : on exige
+      // qu'il tienne avec le début de sa section, sinon on coupe avant lui.
+      let required = need;
+      if(isLabelRow(row)){
+        for(let j=i+1, k=0; j<rows.length && k<2; j++){
+          if(isBlankRow(rows[j])){ required += rowHeight(rows[j]); continue; }
+          required += rowHeight(rows[j]); k++;
+        }
+      }
+      if(yy + required > bottomLimit && cur.rows.length){
         cur.bottom = yy + pad - lineH*0.4;
         pages.push(cur);
         cur = { rows: [], top: HEADER_BOTTOM };
@@ -4383,14 +4401,15 @@
             doc.setTextColor(chordColor[c.name] || BLUE);
             doc.text(c.name, M + pad + c.col*charW, ty);
           });
-          ty += lineH;
         }
         if(row.text){
           doc.setFont('courier','normal'); doc.setFontSize(fs);
           doc.setTextColor(PAPER);
-          doc.text(row.text, M + pad, ty);
+          doc.text(row.text, M + pad, ty + (row.chords.length ? lineH : 0));
         }
-        ty += lineH;
+        // une seule source de vérité pour l'avancement : la mesure et le dessin
+        // ne peuvent pas diverger, sinon la carte ne colle plus au texte.
+        ty += rowHeight(row);
       });
     });
 
