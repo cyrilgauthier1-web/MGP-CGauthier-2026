@@ -242,6 +242,20 @@
   }
   .navlinks-main a:hover, .navlinks-icons a:hover, .io-btn:hover{color:var(--blue-bright);background:rgba(127,176,232,0.1);box-shadow:0 0 18px -4px rgba(127,176,232,0.4) inset;}
   .navlinks-main a:hover svg, .navlinks-icons a:hover svg, .io-btn:hover svg{opacity:1;filter:drop-shadow(0 0 5px var(--blue-bright));}
+  /* ---- alerte export : point discret, halo, puis pulsation au rouge seulement ---- */
+  .io-btn{position:relative;}
+  .io-btn.io-pending::after, .io-btn.io-warn::after, .io-btn.io-full::after{
+    content:'';position:absolute;top:5px;right:5px;width:7px;height:7px;border-radius:50%;
+  }
+  .io-btn.io-pending::after{background:var(--blue-bright);box-shadow:0 0 6px var(--blue-bright);}
+  .io-btn.io-warn::after{background:#f2c572;box-shadow:0 0 7px #f2c572;}
+  .io-btn.io-full::after{background:#e8867f;box-shadow:0 0 8px #e8867f;}
+  .io-btn.io-warn svg{opacity:1;color:#f2c572;}
+  .io-btn.io-full svg{opacity:1;color:#e8867f;animation:ioPulse 1.8s ease-in-out infinite;}
+  @keyframes ioPulse{0%,100%{opacity:1;}50%{opacity:0.35;}}
+  @media (prefers-reduced-motion: reduce){
+    .io-btn.io-full svg{animation:none;}
+  }
   .navlinks-main a.active, .navlinks-icons a.active{color:var(--blue-bright);background:rgba(76,125,176,0.3);box-shadow:0 0 20px -2px rgba(127,176,232,0.55) inset, 0 0 14px -4px rgba(127,176,232,0.5);text-shadow:0 0 10px rgba(127,176,232,0.6);}
   .navlinks-main a.active svg, .navlinks-icons a.active svg{opacity:1;filter:drop-shadow(0 0 6px var(--blue-bright));}
 
@@ -2216,6 +2230,9 @@
 <div class="modal-overlay" id="import-mode-overlay">
   <div class="modal">
     <h3>Importer cette sauvegarde ?</h3>
+    <!-- Averti si le fichier est plus ancien que le travail local : c'est le seul cas
+         de perte de données que le site peut réellement détecter. -->
+    <p id="import-age-warning" style="display:none;background:rgba(232,134,127,0.12);border:1px solid #c0524f;border-radius:8px;padding:10px 12px;color:#e8867f;font-size:12.5px;line-height:1.55;margin-bottom:16px;"></p>
     <p style="color:var(--paper-dim);font-size:13px;line-height:1.6;margin-bottom:8px;">
       <strong style="color:var(--paper);">Compléter</strong> — ajoute les morceaux manquants et remplit seulement les vidéos/PDF <em>vides</em>. N'écrase jamais rien.
     </p>
@@ -2711,6 +2728,7 @@
     try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(songs)); }catch(e){}
     // la jauge n'existe qu'une fois la page construite — d'où le garde-fou
     if(typeof mgpRenderStorage === 'function') mgpRenderStorage();
+    if(typeof mgpMarkChange === 'function') mgpMarkChange();
   }
   function getAllSongs(){ return loadSongs(); }
 
@@ -3650,6 +3668,7 @@
   }
   function saveAlbums(albums){
     try{ localStorage.setItem(ALBUM_STORAGE_KEY, JSON.stringify(albums)); }catch(e){}
+    if(typeof mgpMarkChange === 'function') mgpMarkChange();
   }
 
   const albumsGrid = document.getElementById('albums-grid');
@@ -4593,6 +4612,57 @@
     box.title = u.parts.map(p => (NOMS[p.key] || p.key) + ' : ' + mgpFormatSize(p.size)).join('\n');
   }
 
+  // ---------- ALERTE SUR LE BOUTON EXPORTER ----------
+  // Deux signaux distincts, un seul badge :
+  //   1. la mémoire locale se remplit  -> il est temps de consolider en dur
+  //   2. des modifications n'ont pas encore été exportées
+  // Ce que le site NE PEUT PAS savoir : qu'un import serait nécessaire. Les mémoires
+  // des appareils sont étanches, aucun code ne peut deviner que l'autre est plus à jour.
+  const CHANGE_KEY = 'mgpLastChangeAt';
+  const EXPORT_KEY = 'mgpLastExportAt';
+
+  function mgpMarkChange(){
+    try{ localStorage.setItem(CHANGE_KEY, String(Date.now())); }catch(e){}
+    mgpRenderIoBadge();
+  }
+  function mgpMarkExport(){
+    try{ localStorage.setItem(EXPORT_KEY, String(Date.now())); }catch(e){}
+    mgpRenderIoBadge();
+  }
+  function mgpReadTime(key){
+    try{ return parseInt(localStorage.getItem(key), 10) || 0; }catch(e){ return 0; }
+  }
+
+  function mgpRenderIoBadge(){
+    const btn = document.getElementById('export-data-btn');
+    if(!btn) return;
+    const u = mgpStorageUsage();
+    const pct = u.ok ? (u.total / MGP_QUOTA_REF * 100) : 0;
+    const enRetard = mgpReadTime(CHANGE_KEY) > mgpReadTime(EXPORT_KEY);
+
+    btn.classList.remove('io-warn', 'io-full', 'io-pending');
+    const raisons = [];
+
+    if(pct >= 85){
+      btn.classList.add('io-full');
+      raisons.push('Mémoire locale à ' + Math.round(pct) + ' % — il est temps de consolider en dur.');
+    } else if(pct >= 60){
+      btn.classList.add('io-warn');
+      raisons.push('Mémoire locale à ' + Math.round(pct) + ' % — pense à consolider bientôt.');
+    } else if(enRetard){
+      btn.classList.add('io-pending');
+    }
+    if(enRetard){
+      const d = new Date(mgpReadTime(CHANGE_KEY));
+      raisons.push('Modifications non exportées (dernière le ' +
+        d.toLocaleDateString('fr-FR') + ' à ' +
+        d.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}) + ').');
+    }
+    btn.title = raisons.length
+      ? raisons.join('\n')
+      : 'Exporter tout le site (migration entre appareils)';
+  }
+
   function peSaveSongsOrThrow(songs){
     let json;
     try{ json = JSON.stringify(songs); }catch(e){ throw new Error('les données du morceau sont invalides'); }
@@ -4903,7 +4973,8 @@
     const PIN_KEY = 'mgpCompPin';
 
     function loadComps(){ try{ return JSON.parse(localStorage.getItem(COMP_KEY)) || []; }catch(e){ return []; } }
-    function saveComps(list){ try{ localStorage.setItem(COMP_KEY, JSON.stringify(list)); }catch(e){} }
+    function saveComps(list){ try{ localStorage.setItem(COMP_KEY, JSON.stringify(list)); }catch(e){}
+      if(typeof mgpMarkChange === 'function') mgpMarkChange(); }
 
     // --- geste secret : 5 clics sur le compteur de motivation en moins de 2s ---
     let clickTimes = [];
@@ -5164,7 +5235,8 @@
     // ---------- Module Album (pochette, pistes, génération PDF avec/sans accords) ----------
     const ALBUM_KEY = 'mgpPersonalAlbumsV1';
     function loadPAlbums(){ try{ return JSON.parse(localStorage.getItem(ALBUM_KEY)) || []; }catch(e){ return []; } }
-    function savePAlbums(list){ try{ localStorage.setItem(ALBUM_KEY, JSON.stringify(list)); }catch(e){ alert('Espace de stockage plein — essaie une pochette plus légère.'); } }
+    function savePAlbums(list){ try{ localStorage.setItem(ALBUM_KEY, JSON.stringify(list)); }catch(e){ alert('Espace de stockage plein — essaie une pochette plus légère.'); }
+      if(typeof mgpMarkChange === 'function') mgpMarkChange(); }
     function stripChords(text){ return (text||'').replace(/\[([^\]]+)\]\s?/g, ''); }
 
     function renderAlbumList(){
@@ -6207,6 +6279,7 @@
     }
     function saveSetlists(list){
       try{ localStorage.setItem('mgpSetlistsV1', JSON.stringify(list)); }catch(e){}
+      if(typeof mgpMarkChange === 'function') mgpMarkChange();
     }
 
     function renderChecklist(filterText){
@@ -6498,6 +6571,8 @@
     link.download = 'mgp-sauvegarde-complete-' + new Date().toISOString().slice(0,10) + '.json';
     link.click();
     URL.revokeObjectURL(link.href);
+    // l'export est à jour : on éteint l'alerte du bouton
+    mgpMarkExport();
   });
 
   document.getElementById('import-data-btn').addEventListener('click', () => {
@@ -6513,6 +6588,22 @@
         const data = JSON.parse(reader.result);
         if(!Array.isArray(data.songs)) throw new Error('format invalide');
         pendingImportData = data;
+
+        // Le fichier est-il plus ancien que le travail non exporté de cet appareil ?
+        const warn = document.getElementById('import-age-warning');
+        warn.style.display = 'none';
+        const fichierLe = data.exportedAt ? new Date(data.exportedAt).getTime() : 0;
+        const modifieLe = mgpReadTime(CHANGE_KEY);
+        if(fichierLe && modifieLe && fichierLe < modifieLe){
+          const fmt = t => new Date(t).toLocaleDateString('fr-FR') + ' à ' +
+            new Date(t).toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+          warn.textContent = "⚠ Cette sauvegarde date du " + fmt(fichierLe) +
+            ", alors que cet appareil a été modifié le " + fmt(modifieLe) +
+            ". En mode « Mettre à jour », tu risques d'écraser du travail plus récent. " +
+            "Exporte d'abord depuis cet appareil si tu veux le conserver.";
+          warn.style.display = 'block';
+        }
+
         document.getElementById('import-mode-overlay').classList.add('open');
       }catch(err){
         alert("Ce fichier n'est pas une sauvegarde MGP valide.");
@@ -6659,6 +6750,7 @@
   document.getElementById('years-text').textContent = yearsSince() + ' an' + (yearsSince() > 1 ? 's' : '');
   renderList('');
   mgpRenderStorage();
+  mgpRenderIoBadge();
   showView();
 </script>
 
