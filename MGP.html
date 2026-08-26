@@ -2587,12 +2587,70 @@
     "Zombie|The Cranberries",
     "The Best|Tina Turner",
     "Another Love|Tom Odell",
-    "Fast Car|Tracy Chapman"
+    "Fast Car|Tracy Chapman",
+    // --- Ajouts depuis la liste de favoris Chordify ---
+    // IMPORTANT : toujours ajouter EN FIN DE LISTE. L'identifiant d'un morceau vient de
+    // sa position (id = index + 1) et les setlists référencent ces identifiants : une
+    // insertion au milieu décalerait tous les suivants et casserait les setlists.
+    "Confidentiel|Grégoire",
+    "La Bohème|Charles Aznavour",
+    "Et un jour une femme|Florent Pagny"
   ];
+
+  // ===========================================================================
+  //  DONNÉES EN DUR (vidéos, liens Chordify, partitions)
+  //  --------------------------------------------------------------------------
+  //  RAW_SONGS ci-dessus ne donne que le titre, l'artiste et — par sa POSITION —
+  //  l'identifiant du morceau. Elle ne doit donc jamais être réordonnée.
+  //  Les données viennent ici, rattachées par "titre|artiste" en minuscules, ce qui
+  //  les rend indépendantes de l'ordre.
+  //
+  //  Intérêt : ce qui est ici arrive avec le fichier. Un appareil neuf affiche tout
+  //  sans import, le localStorage ne sert plus qu'aux créations ultérieures, et rien
+  //  n'est perdu si le navigateur vide son stockage.
+  //
+  //  POUR REMPLIR : régénérer ce bloc depuis un export JSON, puis incrémenter
+  //  EXTRAS_VERSION juste en dessous. Exemple d'entrée :
+  //     "je l'aime à mourir|francis cabrel": {
+  //        chordifyUrl: "https://chordify.net/…",
+  //        videos: ["https://youtu.be/…"],
+  //        pdfUrl: "data:application/pdf;base64,…"
+  //     },
+  //  Tant que la table est vide, tout ce mécanisme est inerte.
+  const DEFAULT_EXTRAS = {};
+
+  // Les données en dur ne s'appliquent qu'UNE FOIS par version. Sans ça, une vidéo
+  // ou une partition que l'utilisateur supprime volontairement réapparaîtrait au
+  // chargement suivant, puisque le fichier la contient toujours.
+  // À incrémenter à chaque nouveau remplissage de DEFAULT_EXTRAS.
+  const EXTRAS_VERSION = 0;
+  const EXTRAS_VERSION_KEY = 'mgpExtrasVersionV1';
+
+  function extrasKeyFor(song, artist){
+    return ((song||'') + '|' + (artist||'')).toLowerCase();
+  }
+
+  // Ne remplit QUE les champs vides : une saisie manuelle n'est jamais écrasée.
+  // Renvoie true si quelque chose a été ajouté.
+  function applyExtras(target){
+    const e = DEFAULT_EXTRAS[extrasKeyFor(target.song, target.artist)];
+    if(!e) return false;
+    let changed = false;
+    if(e.chordifyUrl && !target.chordifyUrl){ target.chordifyUrl = e.chordifyUrl; changed = true; }
+    if(e.pdfUrl && !target.pdfUrl){ target.pdfUrl = e.pdfUrl; changed = true; }
+    if(e.partitionSource && !target.partitionSource){ target.partitionSource = e.partitionSource; changed = true; }
+    if(Array.isArray(e.videos) && e.videos.length){
+      target.videos = Array.isArray(target.videos) ? target.videos : [];
+      e.videos.forEach(v => { if(!target.videos.includes(v)){ target.videos.push(v); changed = true; } });
+    }
+    return changed;
+  }
 
   const DEFAULT_SONGS = RAW_SONGS.map((s,i) => {
     const [song, artist] = s.split("|");
-    return {id: String(i+1), num: i+1, song, artist, pdfUrl:'', videos:[], chordifyUrl:''};
+    const base = {id: String(i+1), num: i+1, song, artist, pdfUrl:'', videos:[], chordifyUrl:''};
+    applyExtras(base);
+    return base;
   });
 
   const STORAGE_KEY = 'mgpSongsV1';
@@ -2608,7 +2666,10 @@
     }catch(e){}
 
     if(!stored){
+      // Appareil neuf : DEFAULT_SONGS porte déjà les données en dur, on note donc
+      // la version comme appliquée pour ne pas les réinjecter au chargement suivant.
       saveSongs(DEFAULT_SONGS);
+      try{ localStorage.setItem(EXTRAS_VERSION_KEY, String(EXTRAS_VERSION)); }catch(e){}
       return DEFAULT_SONGS.slice();
     }
 
@@ -2632,6 +2693,17 @@
         changed = true;
       }
     });
+
+    // Données en dur : appliquées une seule fois par version, et uniquement sur les
+    // champs restés vides. Une vidéo ou une partition supprimée volontairement ne
+    // revient donc jamais, et une saisie manuelle n'est jamais écrasée.
+    let extrasSeen = 0;
+    try{ extrasSeen = parseInt(localStorage.getItem(EXTRAS_VERSION_KEY), 10) || 0; }catch(e){}
+    if(extrasSeen < EXTRAS_VERSION){
+      stored.forEach(s => { if(applyExtras(s)) changed = true; });
+      try{ localStorage.setItem(EXTRAS_VERSION_KEY, String(EXTRAS_VERSION)); }catch(e){}
+    }
+
     if(changed) saveSongs(stored);
     return stored;
   }
